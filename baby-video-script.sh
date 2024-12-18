@@ -1,21 +1,53 @@
 #!/bin/bash
 
-## -------------------- params -------------------- ##
+################################################
+# Baby's details
+################################################
 
 baby_name="Baby Name Here" # Add your baby's name here
 baby_birthday="2000-01-01" # Put their birthday here (YYYY-MM-DD format)
 
-## ------------------------------------------------ ##
+################################################
 
-# Generate a unique name for the intermediate folder based on the current date and time
+# Folders and filenames
 timestamp=$(date +%Y%m%d-%H%M%S)
 processed_folder="processed_$timestamp"
 filelist="filelist_$timestamp.txt"
 
-# Create the timestamped 'Processed' directory
 mkdir "$processed_folder"
 
-# Function to calculate the baby's exact age in months and days using `date`
+################################################
+## Calculating the age
+################################################
+print_days() {
+    local age_days="$1"
+    if [ $age_days -eq 1 ]; then
+        echo "$age_days day"
+    else
+        echo "$age_days days"
+    fi
+}
+
+print_months() {
+    local age_months="$1"
+
+    if [ $age_months -eq 1 ]; then
+        echo "$age_months month"
+    else
+        echo "$age_months months"
+    fi
+}
+
+print_years() {
+    local age_years="$1"
+
+    if [ $age_years -eq 1 ]; then
+        echo "$age_years year"
+    else
+        echo "$age_years years"
+    fi
+}
+
 calculate_age() {
   local video_date="$1"
 
@@ -56,81 +88,88 @@ calculate_age() {
               age_days=$((age_days + 28))
           fi
       fi
+    fi
+
+    # Final adjustment for boundary to avoid 1 year, -1 months
+  if [ $age_months -lt 0 ]; then
+      age_months=$((age_months + 12))
+      age_years=$((age_years - 1))
   fi
 
   if [ $age_years -eq 0 ]; then
     if [ $age_months -eq 0 ]; then
-      echo "$age_days days"
+        echo "$(print_days $age_days)"
     else
-      echo "$age_months months, $age_days days"
+      echo "$(print_months $age_months), $(print_days $age_days)"
     fi
   else
-    echo "$age_years years, $age_months months, $age_days days"
+    echo "$(print_years $age_years), $(print_months $age_months), $(print_days $age_days)"
   fi
 }
 
-# Iterate through all MP4 files in the current directory
-for video_file in *.mp4; do
-  # Skip if no MP4 files are found
-  [ -f "$video_file" ] || continue
-  
-  echo "Processing $video_file..."
-  
-  # Try to get the creation time from the metadata using ffprobe
-  creation_time=$(ffprobe -v quiet -print_format json -show_format "$video_file" | jq -r '.format.tags.creation_time')
-  
-  # Check if creation_time was found; if not, extract the date from the filename
-  if [ "$creation_time" != "null" ] && [ -n "$creation_time" ]; then
-    # Convert creation time to epoch time
-    video_date="$creation_time"
+################################################
 
-    # Calculate the baby's exact age at the time of the video (from metadata)
+all_video_files=(*.mp4)
+file_count=${#all_video_files[@]}
+
+if [ $file_count -eq 0 ]; then
+    exit 1
+fi
+
+# Define color codes
+ORANGE='\033[38;5;214m'   # A shade of orange
+RESET='\033[0m'           # Reset to default color
+
+################################################
+## Process all video files - same format with overlay text
+################################################
+
+for i in "${!all_video_files[@]}"; do
+    video_file=${all_video_files[$i]}
+
+    echo -e "Processing ${ORANGE}file $((i + 1)) of $file_count${RESET}: $video_file"
+    
+    # Try to get the creation time from the metadata using ffprobe
+    creation_time=$(ffprobe -v quiet -print_format json -show_format "$video_file" | jq -r '.format.tags.creation_time')
+    
+    # Check if creation_time was found; if not, extract the date from the filename
+    if [ "$creation_time" != "null" ] && [ -n "$creation_time" ]; then
+        video_date=$(date -d "$creation_time" "+%Y-%m-%d %H:%M")
+    else
+        # If no creation time found, extract the date from the filename (assumed format "VID-YYYYMMDD-")
+        video_date=$(echo "$video_file" | grep -oP '\d{8}' | head -n 1)
+        # Reformat the date from YYYYMMDD to YYYY-MM-DD using date
+        video_date=$(date -d "${video_date}" +%Y-%m-%d)
+    fi
+
     age=$(calculate_age "$video_date")
+    echo "Video date is $video_date, baby was $age old"
 
-    filename=$(echo "$video_date" | sed 's/[T:]/-/g' | sed 's/\..*Z$//')
+    # Filename needs to be unique even if we don't have the time, so append a random string (we can't order ones without times anyway)
+    filename=$(echo "$video_date" | sed 's/[ :]/-/g')-$(openssl rand -hex 3)
 
-    # Apply ffmpeg command to add the creation time as overlay text (countdown), resize to portrait Full HD
-    epoch_time=$(date -d "$creation_time" +%s)
-    ffmpeg -i "$video_file" -vf "
-        scale=1080:1920:force_original_aspect_ratio=decrease,
-        pad=1080:1920:-1:-1:color=black,
-        drawtext=fontfile=/usr/share/fonts/TTF/TSCu_Comic.ttf:text='%{pts\:localtime\:$epoch_time}':x=W-text_w-10:y=H-text_h-10:fontsize=28:fontcolor=white:shadowcolor=black:shadowx=2:shadowy=2:box=1:boxcolor=0x00000080:boxborderw=5,
-        drawtext=fontfile=/usr/share/fonts/TTF/TSCu_Comic.ttf:text='$baby_name - $age old':x=10:y=H-text_h-10:fontsize=28:fontcolor=white:shadowcolor=black:shadowx=2:shadowy=2:box=1:boxcolor=0x00000080:boxborderw=5
-    " -c:a copy "$processed_folder/${filename}.mp4"
-
-  else
-    # If no creation time found, extract the date from the filename (assumed format "VID-YYYYMMDD-")
-    video_date=$(echo "$video_file" | grep -oP '\d{8}' | head -n 1)
-
-    age=$(calculate_age "$video_date")
-
-    # Reformat the date from YYYYMMDD to YYYY-MM-DD using date
-    formatted_date=$(date -d "${video_date}" +%Y-%m-%d)
-    video_date="$formatted_date"  # Use the formatted date from filename as the video date
-
-    # Filename needs to be unique but we don't have the time, so append a random string (we can't order it anyway)
-    filename=$video_date-$(openssl rand -hex 6)
-
-    # Apply ffmpeg command to add the formatted date as overlay text (no countdown), resize to portrait Full HD
-    ffmpeg -i "$video_file" -vf "
-        scale=1080:1920:force_original_aspect_ratio=decrease,
-        pad=1080:1920:-1:-1:color=black,
-        drawtext=fontfile=/usr/share/fonts/TTF/TSCu_Comic.ttf:text='$formatted_date':x=W-text_w-10:y=H-text_h-10:fontsize=28:fontcolor=white:shadowcolor=black:shadowx=2:shadowy=2:box=1:boxcolor=0x00000080:boxborderw=5,
-        drawtext=fontfile=/usr/share/fonts/TTF/TSCu_Comic.ttf:text='$baby_name - $age old':x=10:y=H-text_h-10:fontsize=28:fontcolor=white:shadowcolor=black:shadowx=2:shadowy=2:box=1:boxcolor=0x00000080:boxborderw=5
-    " -c:a copy "$processed_folder/${filename}.mp4"
-  fi
+    # Re-encode to landscape, full HD in preparation for concatenation
+    ffmpeg -loglevel warning -i "$video_file" -vf "
+        scale=1920:1080:force_original_aspect_ratio=decrease,
+        pad=1920:1080:-1:-1:color=black,
+        drawtext=fontfile=/usr/share/fonts/TTF/TSCu_Comic.ttf:text='$(echo "$video_date" | sed 's/:/\\:/g')':x=W-text_w-10:y=H-text_h-10:fontsize=48:fontcolor=white:shadowcolor=black:shadowx=2:shadowy=2:box=1:boxcolor=0x00000080:boxborderw=5,
+        drawtext=fontfile=/usr/share/fonts/TTF/TSCu_Comic.ttf:text='$baby_name - $age old':x=10:y=H-text_h-10:fontsize=48:fontcolor=white:shadowcolor=black:shadowx=2:shadowy=2:box=1:boxcolor=0x00000080:boxborderw=5
+    " -c:v libx264 -c:a aac -b:v 5000k -b:a 190k -s 1920x1080 -r 30 "$processed_folder/${filename}.mp4"
 
   echo "Finished processing $video_file"
 done
 
-echo "All videos processed and saved in the '$processed_folder' folder."
+echo "All videos processed and saved in the '$processed_folder' folder"
 
-# Sort the files lexicographically and add them to the filelist
+################################################
+## Concatenate videos
+################################################
+
+# Sort the files lexicographically (due to filenames this is also chronological, which is the aim)
 for f in $(ls "$processed_folder"/*.mp4 | sort); do
   echo "file '$f'" >> $filelist
 done
 
-# Concatenate the videos using ffmpeg
-ffmpeg -f concat -safe 0 -i $filelist -c copy output_$timestamp.mp4
+ffmpeg -loglevel warning -f concat -safe 0 -i $filelist -c copy "$processed_folder/final_$timestamp.mp4"
 
-echo "Video created! Filename is output_$timestamp.mp4."
+echo "Video created! File can be found at $processed_folder/final_$timestamp.mp4"
